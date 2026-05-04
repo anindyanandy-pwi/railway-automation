@@ -1,0 +1,98 @@
+<!doctype html>
+<html>
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Drive → Sheet Formula</title>
+  <style>
+    body{font-family:Arial,Helvetica,sans-serif;padding:14px}
+    label{display:block;margin-bottom:6px;font-weight:600}
+    input[type=text]{width:100%;padding:8px;border:1px solid #ccc;border-radius:6px}
+    button{margin-top:8px;padding:8px 12px;border-radius:6px;border:0;background:#0b5cff;color:#fff;cursor:pointer}
+    button.small{background:#e6e6e6;color:#111;margin-left:8px}
+    textarea{width:100%;height:80px;padding:8px;border:1px solid #ddd;border-radius:6px;resize:none}
+    .err{color:#b00020;margin-top:8px}
+    .row{display:flex;gap:8px;align-items:center}
+  </style>
+</head>
+<body>
+  <label>Paste Google Drive file link</label>
+  <input id="link" type="text" placeholder="https://drive.google.com/file/d/FILEID/view" />
+  <div class="row">
+    <button id="gen">Generate</button>
+    <button id="copy" class="small" disabled>Copy</button>
+    <button id="insert" class="small" disabled>Insert into cell</button>
+  </div>
+
+  <label style="margin-top:10px;display:block">Formula (read-only)</label>
+  <textarea id="formula" readonly></textarea>
+  <div id="err" class="err" aria-live="polite"></div>
+
+  <script>
+    function extractFileId(url) {
+      if(!url) return null;
+      var m = url.match(/\/d\/([-\w]{25,})/);
+      if(m) return m[1];
+      m = url.match(/[?&]id=([-\w]{25,})/);
+      if(m) return m[1];
+      m = url.match(/[-\w]{25,}/);
+      if(m) return m[0];
+      return null;
+    }
+
+    const link = document.getElementById('link');
+    const gen = document.getElementById('gen');
+    const copy = document.getElementById('copy');
+    const insert = document.getElementById('insert');
+    const formula = document.getElementById('formula');
+    const err = document.getElementById('err');
+
+    gen.onclick = () => {
+      err.textContent = '';
+      formula.value = '';
+      copy.disabled = true;
+      insert.disabled = true;
+      var url = link.value.trim();
+      if(!url) { err.textContent = 'Please paste a Drive file link.'; return; }
+      var id = extractFileId(url);
+      if(!id) { err.textContent = 'Could not extract Drive file id. Ensure it is a file link (not a folder).'; return; }
+      var f = '=HYPERLINK("https://drive.google.com/file/d/' + id + '/view", IMAGE("https://drive.google.com/uc?export=view&id=' + id + '"))';
+      formula.value = f;
+      copy.disabled = false;
+      insert.disabled = false;
+      formula.select();
+    };
+
+    copy.onclick = async () => {
+      try {
+        await navigator.clipboard.writeText(formula.value);
+        copy.textContent = 'Copied';
+        setTimeout(()=>copy.textContent='Copy',900);
+      } catch (e) {
+        formula.select();
+        err.textContent = 'Auto-copy blocked. Press Ctrl+C to copy manually.';
+      }
+    };
+
+    // Insert into the currently selected cell in the spreadsheet
+    insert.onclick = () => {
+      err.textContent = '';
+      if (!formula.value) { err.textContent = 'Generate a formula first.'; return; }
+      // call server-side Apps Script function to insert into active cell
+      google.script.run.withSuccessHandler(function(res){
+        if(res && res.success) {
+          insert.textContent = 'Inserted';
+          setTimeout(()=>insert.textContent='Insert into cell',900);
+        } else {
+          err.textContent = 'Insert failed: ' + (res && res.message ? res.message : 'unknown');
+        }
+      }).insertFormulaToActiveCell(formula.value);
+    };
+
+    link.addEventListener('keydown', function(e){
+      if(e.key === 'Enter'){ e.preventDefault(); gen.click(); }
+    });
+  </script>
+</body>
+</html>
