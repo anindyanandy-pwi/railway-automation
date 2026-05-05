@@ -2,6 +2,7 @@
 //  bad_road_surface_apps_script.gs — Sheet 1
 //  Bad Road Surface + TWS Tie Bar exception reports.
 //  Includes cache writing, updated color scheme.
+//  FIX: AEN forward-fill now happens BEFORE LC skip check
 // ============================================================
 
 var SHARED_REPORT_SHEET = "Exception Report";
@@ -21,7 +22,6 @@ function sharedHasPhoto(val) {
   if (!s || sharedIsEmpty(s)) return false;
   if (s === "CellImage") return true;
   var l=s.toLowerCase();
-  // Only return true for actual photo indicators — NOT for arbitrary text
   return l.indexOf("hyperlink")>-1 || l.indexOf("image(")>-1 ||
          l.indexOf("http")>-1 || l.indexOf("drive.google")>-1 ||
          /\.(jpg|jpeg|png|gif)/i.test(s);
@@ -93,13 +93,9 @@ function _brsWriteRows(sheet,startRow,SM,EM,outputRows) {
 }
 
 // ── Bad Road Surface ──────────────────────────────────────────────────────────
-// Photo detection helper — checks value AND formula (catches =IMAGE() / =HYPERLINK() cells)
 function _brsHasPhoto(val, formula) {
-  // CellImage object (in-cell embedded image via newer API)
   if (val !== null && val !== undefined && typeof val === 'object' && !Array.isArray(val)) return true;
-  // URL / HYPERLINK() / IMAGE() stored as plain value
   if (sharedHasPhoto(val)) return true;
-  // Formula-based images: =IMAGE(...) or =HYPERLINK(...)
   if (formula) {
     var f = String(formula).toLowerCase();
     return f.indexOf("image(") > -1 || f.indexOf("hyperlink(") > -1 || f.indexOf("http") > -1;
@@ -117,7 +113,7 @@ function generateBadRoadReport() {
   }
   var dataRange = dataSheet.getDataRange();
   var allData     = dataRange.getValues();
-  var allFormulas = dataRange.getFormulas(); // needed to detect =IMAGE() / =HYPERLINK() photos
+  var allFormulas = dataRange.getFormulas();
 
   var headerRowIdx=-1;
   for (var i=0;i<allData.length;i++) {
@@ -147,17 +143,19 @@ function generateBadRoadReport() {
     var row=allData[r];
     var rowF=allFormulas[r];
 
-    // Skip if LC cell is a Date object (date value bled into LC column)
+    // ── FIX: Update AEN BEFORE any row-skip so section headers are captured ──
+    var aen=String(row[iAEN]||"").trim();
+    if (!sharedIsEmpty(aen)) curAEN=aen; else aen=curAEN;
+
+    // Skip if LC cell is a Date object
     if (row[iLC] instanceof Date) continue;
 
     var lc=String(row[iLC]||"").trim();
 
-    // Skip empty, junk, single-dash placeholder rows, and header repetitions
+    // Skip empty, junk, placeholder rows and header repetitions
     if (!lc || lc==="-" || lc==="–" || lc==="—" ||
         sharedIsEmpty(lc) || lc.toLowerCase().indexOf("name of lc")>-1) continue;
 
-    var aen=String(row[iAEN]||"").trim();
-    if (!sharedIsEmpty(aen)) curAEN=aen; else aen=curAEN;
     var line=String(row[iLine]||"").trim();
     var km=String(row[iKM]||"").trim();
     var label="LC: "+lc;
@@ -165,35 +163,25 @@ function generateBadRoadReport() {
     if (!sharedIsEmpty(km))   label+=" | KM: "+km;
     if (!sharedIsEmpty(aen))  label+=" (AEN: "+aen+")";
 
-    // Skip completely empty placeholder rows:
-    // If road photo AND TDC are both truly empty (not even '--'), the row is unregistered
     var rdPhotoRaw = iRoadPhoto>=0 ? String(row[iRoadPhoto]||"").trim() : "";
     var tdcRaw     = iTDC>=0 ? String(row[iTDC]||"").trim() : "";
     if (rdPhotoRaw==="" && tdcRaw==="") continue;
 
     var datePitchingVal=row[iDatePitching], closingPhotoVal=row[iClosingPhoto];
     var datePitchingStr=String(datePitchingVal||"").trim();
-    // Date object in pitching column — convert properly
     if (datePitchingVal instanceof Date && !isNaN(datePitchingVal.getTime()))
       datePitchingStr = sharedFmtDate(datePitchingVal);
 
     var closingPhotoFormula = iClosingPhoto>=0&&rowF ? rowF[iClosingPhoto] : "";
     var closingPhotoDone = _brsHasPhoto(closingPhotoVal, closingPhotoFormula);
 
-    // Work fully complete: pitching date filled AND closing photo present
-    // Work fully complete: pitching date filled AND closing photo present
-    // Both required — closing photo alone means work done but date not recorded (→ Ex4)
-    // Pitching date alone means date recorded but photo missing (→ Ex5)
     if (!sharedIsEmpty(datePitchingStr) && closingPhotoDone) { skipped++; continue; }
     scanned++;
 
-    // Exception 1: Road surface photo missing
     var roadPhotoFormula = iRoadPhoto>=0&&rowF ? rowF[iRoadPhoto] : "";
     if (!_brsHasPhoto(row[iRoadPhoto], roadPhotoFormula)) ex1.push(label);
 
     var tdcDate=sharedParseDate(row[iTDC]);
-    // Fix: parse LATEST date from possibly multiline Revised TDC cell
-    // e.g. "15.04.26\n30.04.2026" → take 30.04.2026 (most recent extension)
     var revisedStr=String(row[iRevisedTDC]||"").trim();
     var revisedDate = null;
     if (!sharedIsEmpty(revisedStr)) {
@@ -208,26 +196,21 @@ function generateBadRoadReport() {
       }
     }
 
-    // Exception 2: TDC lapsed — ONLY flag if no closing photo either
     if (tdcDate&&tdcDate<today&&!revisedDate&&
         sharedIsEmpty(datePitchingStr)&&!closingPhotoDone)
       ex2.push({label:label, tdc:sharedFmtDate(tdcDate), days:Math.floor((today-tdcDate)/864e5)});
 
-    // Exception 3: Revised TDC lapsed — ONLY flag if no closing photo
     if (revisedDate&&revisedDate<today&&sharedIsEmpty(datePitchingStr)&&!closingPhotoDone)
       ex3.push({label:label, tdc:sharedFmtDate(revisedDate), days:Math.floor((today-revisedDate)/864e5)});
 
-    // Exception 4: Closing photo present but pitching date not filled
     if (closingPhotoDone&&sharedIsEmpty(datePitchingStr)) ex4.push(label);
 
-    // Exception 5: Pitching date filled but closing photo missing
     if (!sharedIsEmpty(datePitchingStr)&&!closingPhotoDone) ex5.push(label);
   }
 
   var out=_buildBadRoadOutput(scanned,skipped,ex1,ex2,ex3,ex4,ex5);
   writeReportSection(BRS_SECTION_ID, out);
 
-  // Write cache summary
   try {
     var summary = cm_buildSummary({
       "Road surface photo missing": ex1,

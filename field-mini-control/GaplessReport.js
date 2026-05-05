@@ -1,6 +1,7 @@
 // ============================================================
 //  GaplessReport.gs — Sheet 1 | Gapless Joint of CMS Crossing
 //  Updated with new color scheme and cache writing.
+//  FIX: Photo detection now handles CellImage objects + formulas
 // ============================================================
 
 var GAP_SECTION_ID   = "GAPLESS_CMS";
@@ -20,7 +21,12 @@ function generateGaplessReport() {
     catch(_) { console.log('Gapless/CMS sheet not found.'); }
     return;
   }
-  var allData=dataSheet.getDataRange().getValues();
+
+  // ── FIX: Read both values AND formulas to detect image/hyperlink cells ──
+  var dataRange=dataSheet.getDataRange();
+  var allData=dataRange.getValues();
+  var allFormulas=dataRange.getFormulas();
+
   var mainHdrIdx=-1;
   for (var i=0;i<allData.length;i++) {
     for (var j=0;j<allData[i].length;j++) {
@@ -60,6 +66,8 @@ function generateGaplessReport() {
   var dataStart=mainHdrIdx+2;
   for (var r=dataStart;r<allData.length;r++) {
     var row=allData[r];
+    var rowF=allFormulas[r]; // ── FIX: get formula row ──
+
     var ra=String(row[iAEN]||"").trim(), rp=String(row[iPWI]||"").trim();
     if (!_gapEmpty(ra)) curAEN=ra;
     if (!_gapEmpty(rp)) curPWI=rp;
@@ -85,13 +93,18 @@ function generateGaplessReport() {
       if (gForeML!==null&&gForeML>GAP_THRESHOLD_MM) badCols.push("Fore-ML: "+gForeML+"mm");
       if (gForeTo!==null&&gForeTo>GAP_THRESHOLD_MM) badCols.push("Fore-TO: "+gForeTo+"mm");
       if (gBackML!==null&&gBackML>GAP_THRESHOLD_MM) badCols.push("Back-ML: "+gBackML+"mm");
-      if (gBackTo!==null&&gBackTo>GAP_THRESHOLD_MM) badCols.push("Back-TO: "+gBackTo+"mm");
+      if (gBackTo!==null&&gBackTo>GAP_THRESHOLD_MM) badCols.push("Back-To: "+gBackTo+"mm");
       ex1.push({label:label, cols:badCols.join(", ")});
     }
+
+    // ── FIX: Pass formula to _gapPhoto for each photo cell ──
     var missingPhotos=[];
-    if (!_gapPhoto(row[iForePhoto])) missingPhotos.push("Fore");
-    if (!_gapPhoto(row[iBackPhoto])) missingPhotos.push("Back");
+    var foreFormula = rowF&&iForePhoto>=0 ? rowF[iForePhoto] : "";
+    var backFormula = rowF&&iBackPhoto>=0 ? rowF[iBackPhoto] : "";
+    if (!_gapPhoto(row[iForePhoto], foreFormula)) missingPhotos.push("Fore");
+    if (!_gapPhoto(row[iBackPhoto], backFormula)) missingPhotos.push("Back");
     if (missingPhotos.length>0) ex2.push({label:label, missing:missingPhotos.join(", ")+" photo missing"});
+
     if (gapExceeds) {
       if (_gapEmpty(tdcRaw)||tdcRaw==="---") {
         ex3.push({label:label, status:"TDC not populated"});
@@ -105,7 +118,6 @@ function generateGaplessReport() {
     }
   }
   writeReportSection(GAP_SECTION_ID, _buildGapOutput(scanned,skipped,ex1,ex2,ex3));
-  // Cache
   try {
     var summary=cm_buildSummary({
       "Gap exceeds 2mm": ex1.map(function(e){return e.label;}),
@@ -128,12 +140,26 @@ function _gapEmpty(v) {
   if (v===null||v===undefined) return true;
   return ["","---","--","----","nan","none","nil","na","n/a","-"].indexOf(String(v).trim().toLowerCase())>-1;
 }
-function _gapPhoto(v) {
-  if (!v) return false; var s=String(v).trim(); if (_gapEmpty(s)) return false;
+
+// ── FIX: Now handles CellImage objects AND formula-based images ──
+function _gapPhoto(v, formula) {
+  // CellImage: embedded image inserted via Insert > Image in cell
+  if (v !== null && v !== undefined && typeof v === 'object' && !Array.isArray(v)) return true;
+  if (!v) return false;
+  var s=String(v).trim();
+  if (_gapEmpty(s)) return false;
   var l=s.toLowerCase();
-  return l.indexOf("hyperlink")>-1||l.indexOf("image(")>-1||l.indexOf("http")>-1||l.indexOf("drive.google")>-1||
-         /\.(jpg|jpeg|png|gif)/i.test(s);
+  // Value-based photo indicators
+  if (l.indexOf("hyperlink")>-1||l.indexOf("image(")>-1||l.indexOf("http")>-1||
+      l.indexOf("drive.google")>-1||/\.(jpg|jpeg|png|gif)/i.test(s)) return true;
+  // Formula-based: =IMAGE() or =HYPERLINK()
+  if (formula) {
+    var f=String(formula).toLowerCase();
+    return f.indexOf("image(")>-1||f.indexOf("hyperlink(")>-1||f.indexOf("http")>-1;
+  }
+  return false;
 }
+
 function _parseGap(val) {
   if (val===null||val===undefined) return null;
   var s=String(val).trim(); if (_gapEmpty(s)) return null;
