@@ -1,10 +1,39 @@
 // ============================================================
 //  OMSPeaksReport.gs — Sheet 3
 //  OMS/TRC UML Repeated Peaks exception report.
-//  Updated with new color scheme and cache writing.
+//  FIXES:
+//  1. dataStart = hdrIdx+2 (skip sub-header row)
+//  2. Strict AEN col match — won't hit "Analysis by AEN"
+//  3. CellImage guard on pStr for AEN/PWI (no garbage forward-fill)
+//  4. pPhoto now detects CellImage objects (embedded images)
+//  5. Row validation: only process rows where col 0 is a positive number
 // ============================================================
 
 var OMS_SECTION_ID = "OMS_PEAKS";
+
+// ── Local helpers to fix CellImage issues ─────────────────────────────────────
+function _omsCellImage(v) {
+  return v !== null && v !== undefined && typeof v === 'object' && !Array.isArray(v);
+}
+// Use instead of pStr() for AEN/PWI columns — returns "" for embedded images
+function _omsStr(row, idx) {
+  if (idx < 0 || idx >= row.length) return "";
+  if (_omsCellImage(row[idx])) return "";
+  return pStr(row, idx);
+}
+// Use instead of pPhoto() — detects CellImage as a valid photo
+function _omsPhoto(v) {
+  if (_omsCellImage(v)) return true;
+  return pPhoto(v);
+}
+// Strict column search — only exact keyword match (prevents "Analysis by AEN" matching "aen")
+function _omsColStrict(hdr, keyword) {
+  var kw = keyword.toLowerCase().trim();
+  for (var i = 0; i < hdr.length; i++) {
+    if (String(hdr[i]).trim().toLowerCase() === kw) return i;
+  }
+  return -1;
+}
 
 function generateOMSReport() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -15,11 +44,13 @@ function generateOMSReport() {
     return;
   }
   var allData = dataSheet.getDataRange().getValues();
-  var hdrIdx  = -1;
+
+  // ── Find main header row ──────────────────────────────────────────────────
+  var hdrIdx = -1;
   for (var i = 0; i < allData.length; i++) {
     for (var j = 0; j < allData[i].length; j++) {
       var v = String(allData[i][j]).toLowerCase();
-      if (v.indexOf("km") > -1 || v.indexOf("chainage") > -1 || v.indexOf("location") > -1) {
+      if (v.indexOf("km") > -1 || v.indexOf("location") > -1 || v.indexOf("pwi") > -1) {
         hdrIdx = i; break;
       }
     }
@@ -29,48 +60,93 @@ function generateOMSReport() {
     try { SpreadsheetApp.getUi().alert("Header not found in OMS Peaks sheet."); }
     catch(_) {} return;
   }
-  var hdr     = allData[hdrIdx];
-  var iAEN    = pCol(hdr,"aen"),      iPWI    = pCol(hdr,"pwi");
-  var iKM     = pCol(hdr,"km"),       iLine   = pCol(hdr,"line");
-  var iLoc    = pCol(hdr,"location"), iRail   = pCol(hdr,"rail");
-  var iPreMes = pCol(hdr,"pre measurement"), iPostMes = pCol(hdr,"post measurement");
-  var iPhoto  = pCol(hdr,"photo");
-  var iTDC    = pCol(hdr,"tdc"),      iRevTDC = pCol(hdr,"revised");
-  var iDone   = pCol(hdr,"completion");
-  if (iDone < 0) iDone = pCol(hdr,"date of tamping");
 
-  var today   = new Date(); today.setHours(0,0,0,0);
+  var hdr    = allData[hdrIdx];
+  var subHdr = hdrIdx+1 < allData.length ? allData[hdrIdx+1] : [];
+
+  // ── Column detection ──────────────────────────────────────────────────────
+  // FIX: Use strict match for AEN — OMS has no dedicated AEN col
+  var iAEN    = _omsColStrict(hdr, "aen");   // returns -1 for OMS (correct)
+  var iPWI    = pCol(hdr, "pwi");
+  var iLine   = pCol(hdr, "line");
+  var iLoc    = pCol(hdr, "location");
+  // KM may be in sub-header row if main header has merged "Location" cell
+  var iKM     = pCol(hdr, "km");
+  if (iKM < 0) iKM = pCol(subHdr, "km");
+  var iSection = pCol(hdr, "section");
+  if (iSection < 0) iSection = pCol(hdr, "major section");
+  var iRail    = pCol(hdr, "rail");
+  var iPreMes  = pCol(hdr, "pre measurement");
+  if (iPreMes < 0) iPreMes = pCol(subHdr, "pre measurement");
+  var iPostMes = pCol(hdr, "post measurement");
+  if (iPostMes < 0) iPostMes = pCol(subHdr, "post measurement");
+  var iPhoto   = pCol(hdr, "photo");
+  if (iPhoto < 0) iPhoto = pCol(subHdr, "photo");
+  var iTDC     = pCol(hdr, "tdc");
+  var iRevTDC  = pCol(hdr, "revised");
+  var iDone    = pCol(hdr, "completion");
+  if (iDone < 0) iDone = pCol(hdr, "date of tamping");
+
+  var today  = new Date(); today.setHours(0,0,0,0);
   var ex1=[],ex2=[],ex3=[],ex4=[];
   var scanned=0, skipped=0, curAEN="", curPWI="";
 
-  for (var r = hdrIdx+1; r < allData.length; r++) {
+  // FIX: dataStart = hdrIdx+2 to skip sub-header row
+  var dataStart = hdrIdx + 2;
+
+  for (var r = dataStart; r < allData.length; r++) {
     var row = allData[r];
-    var ra = pStr(row,iAEN), rp = pStr(row,iPWI);
-    if (!pEmpty(ra)) curAEN = ra;
+
+    // FIX: Skip non-data rows — col 0 (Sl.No.) must be a positive number
+    var slVal = row[0];
+    if (slVal === null || slVal === undefined || slVal === "") continue;
+    if (_omsCellImage(slVal)) continue;
+    var slNum = Number(slVal);
+    if (isNaN(slNum) || slNum <= 0) continue;
+
+    // FIX: Use _omsStr() — returns "" for CellImage, prevents bad forward-fill
+    var ra = _omsStr(row, iAEN);
+    var rp = _omsStr(row, iPWI);
+    if (iAEN >= 0 && !pEmpty(ra)) curAEN = ra;
     if (!pEmpty(rp)) curPWI = rp;
-    var km   = iKM >= 0 ? pStr(row,iKM) : "";
-    var loc  = iLoc >= 0 ? pStr(row,iLoc) : "";
-    var line = pStr(row,iLine);
-    if (pEmpty(km) && pEmpty(loc)) continue;
-    var label = "AEN: " + curAEN;
-    if (!pEmpty(curPWI)) label += " | PWI: " + curPWI;
-    if (!pEmpty(km))     label += " | KM: " + km;
-    if (!pEmpty(loc))    label += " | Loc: " + loc;
-    if (!pEmpty(line))   label += " | Line: " + line;
-    if (iRail >= 0 && !pEmpty(pStr(row,iRail))) label += " | Rail: " + pStr(row,iRail);
-    var doneStr  = iDone >= 0 ? pStr(row,iDone) : "";
+
+    var km      = iKM >= 0 ? _omsStr(row, iKM) : "";
+    var loc     = iLoc >= 0 ? _omsStr(row, iLoc) : "";
+    var section = iSection >= 0 ? _omsStr(row, iSection) : "";
+    var line    = _omsStr(row, iLine);
+
+    if (pEmpty(km) && pEmpty(loc) && pEmpty(section)) continue;
+
+    // Build label — only include AEN if we actually have an AEN column
+    var label = "";
+    if (iAEN >= 0 && !pEmpty(curAEN)) label += "AEN: " + curAEN + " | ";
+    if (!pEmpty(curPWI))   label += "PWI: " + curPWI + " | ";
+    if (!pEmpty(section))  label += "Sec: " + section + " | ";
+    if (!pEmpty(km))       label += "KM: " + km + " | ";
+    if (!pEmpty(loc))      label += "Loc: " + loc + " | ";
+    if (!pEmpty(line))     label += "Line: " + line + " | ";
+    if (iRail >= 0 && !pEmpty(_omsStr(row,iRail))) label += "Rail: " + _omsStr(row,iRail) + " | ";
+    label = label.replace(/\s*\|\s*$/, "");  // trim trailing pipe
+
+    var doneStr  = iDone >= 0 ? _omsStr(row, iDone) : "";
+    // FIX: _omsPhoto detects CellImage as valid photo
     var photoVal = iPhoto >= 0 ? row[iPhoto] : "";
-    if (!pEmpty(doneStr) && pPhoto(photoVal)) { skipped++; continue; }
+    if (!pEmpty(doneStr) && _omsPhoto(photoVal)) { skipped++; continue; }
     scanned++;
+
     // Exception 1: Pre-measurement not done
-    if (iPreMes >= 0 && pEmpty(pStr(row,iPreMes))) ex1.push(label);
+    if (iPreMes >= 0 && pEmpty(_omsStr(row, iPreMes)) && !_omsCellImage(row[iPreMes]))
+      ex1.push(label);
+
     // Exception 2: Photo missing
-    if (!pPhoto(photoVal)) ex2.push(label);
+    if (!_omsPhoto(photoVal)) ex2.push(label);
+
     // Exception 3: TDC lapsed (no revised)
     var tdcDate = iTDC >= 0 ? pDate(row[iTDC]) : null;
-    var revStr  = iRevTDC >= 0 ? pStr(row,iRevTDC) : "";
+    var revStr  = iRevTDC >= 0 ? _omsStr(row, iRevTDC) : "";
     if (tdcDate && tdcDate < today && pEmpty(revStr) && pEmpty(doneStr))
       ex3.push({ label:label, tdc:pFmt(tdcDate), days:pDays(tdcDate,today) });
+
     // Exception 4: Revised TDC lapsed
     var revDate = iRevTDC >= 0 ? pDate(row[iRevTDC]) : null;
     if (revDate && revDate < today && pEmpty(doneStr))

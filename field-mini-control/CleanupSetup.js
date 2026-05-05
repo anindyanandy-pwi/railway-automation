@@ -123,7 +123,10 @@ function onEditDailyReport(e) {
     // Identify editor by email → AEN name
     var editorEmail = "";
     var aenName     = "";
-    try { editorEmail = Session.getActiveUser().getEmail().toLowerCase().trim(); } catch(_) {}
+    try {
+      if (e.user && e.user.getEmail()) editorEmail = e.user.getEmail().toLowerCase().trim();
+      if (!editorEmail) editorEmail = Session.getActiveUser().getEmail().toLowerCase().trim();
+    } catch(_) {}
 
     if (editorEmail) {
       // Look up email in _CONFIG_ AEN_EMAILS section
