@@ -1,9 +1,12 @@
 // ============================================================
 //  TRCUMLReport.gs — Sheet 3
 //  FIXED: Forward-fills merged cells and corrects photo count.
+//  Includes all local helper functions to prevent ReferenceErrors.
 // ============================================================
 
 var TRC_SECTION_ID = "TRC_UML_PEAKS";
+
+// ── Local Helpers for Data Integrity ──────────────────────────────────────────
 
 function _trcCellImage(v) {
   return v !== null && v !== undefined && typeof v === 'object' && !Array.isArray(v);
@@ -32,13 +35,15 @@ function _trcColStrict(hdr, keyword) {
   return -1;
 }
 
+// ── Main Scanner Function ─────────────────────────────────────────────────────
+
 function generateTRCReport() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var dataSheet = pFindSheet(ss, ["trc","trc uml","trc peak","uml"]);
   if (!dataSheet) return;
 
-  var dataRange  = dataSheet.getDataRange();
-  var allData    = dataRange.getValues();
+  var dataRange   = dataSheet.getDataRange();
+  var allData     = dataRange.getValues();
   var allFormulas = dataRange.getFormulas();
 
   var hdrIdx = -1;
@@ -78,10 +83,10 @@ function generateTRCReport() {
   if (iDone < 0) iDone = pCol(hdr, "date of work");
 
   var today  = new Date(); today.setHours(0,0,0,0);
-  var ex1=[],ex2=[],ex3=[],ex4=[];
+  var ex1=[], ex2=[], ex3=[], ex4=[];
   var scanned=0, skipped=0;
   
-  // Persistence states for forward-filling merged cells
+  // Forward-fill memory for merged cells
   var curAEN="", curPWI="", curSection="", curLine="", curKM="";
   var carryPhotoKey = "", carryPhotoActive = false;
 
@@ -91,10 +96,9 @@ function generateTRCReport() {
     var row  = allData[r];
     var rowF = allFormulas[r] || [];
 
-    // Row validation: Sl.No must be present
     if (pEmpty(row[0])) continue;
 
-    // Forward-fill location metadata (Handles merged cells)
+    // Persist metadata across merged rows
     var ra = _trcStr(row, iAEN); if (!pEmpty(ra)) curAEN = ra;
     var rp = _trcStr(row, iPWI); if (!pEmpty(rp)) curPWI = rp;
     var rs = _trcStr(row, iSection); if (!pEmpty(rs)) curSection = rs;
@@ -106,14 +110,13 @@ function generateTRCReport() {
     var label = (curAEN ? "AEN: "+curAEN+" | " : "") + "PWI: "+curPWI+" | Sec: "+curSection+" | KM: "+curKM+" | Line: "+curLine;
     var doneStr = iDone >= 0 ? _trcStr(row, iDone) : "";
 
-    // Comprehensive Photo Check
     var p1Val  = iPhoto1 >= 0 ? row[iPhoto1]  : "";
     var p1Form = iPhoto1 >= 0 ? (rowF[iPhoto1] || "") : "";
     var p2Val  = iPhoto2 >= 0 ? row[iPhoto2]  : "";
     var p2Form = iPhoto2 >= 0 ? (rowF[iPhoto2] || "") : "";
     var rawHasPhoto = _trcPhotoFull(p1Val, p1Form) || _trcPhotoFull(p2Val, p2Form);
 
-    // Carry-Forward Logic
+    // Persistent Photo Carry-Forward logic
     var locationKey = curPWI + "|" + curSection + "|" + curLine + "|" + curKM;
     var hasPhoto = rawHasPhoto;
     if (rawHasPhoto) {
@@ -158,4 +161,52 @@ function generateTRCReport() {
 
   var tot = ex1.length+ex2.length+ex3.length+ex4.length;
   try { SpreadsheetApp.getUi().alert("TRC UML Report updated.\n\nScanned: "+scanned+" | Exceptions: "+tot); } catch(_) {}
+}
+
+// ── Shared System Helpers ─────────────────────────────────────────────────────
+
+function s3_TRC()         { s3RunOne(TRC_SECTION_ID,"TRC_UML_Peaks","generateTRCReport",S3_RECIPIENTS); }
+function s3_TRC_trigger() { s3_TRC(); }
+
+function _buildTRCOutput(scanned, skipped, ex1, ex2, ex3, ex4) {
+  var tot = ex1.length + ex2.length + ex3.length + ex4.length, out = [];
+  var today = pToday();
+  function row(t, b, c) { out.push([t || "", b || false, c || null]); }
+  
+  row("TRC UML PEAKS — EXCEPTION REPORT", true, S3_C.TITLE_BG);
+  row("Date: " + today + "   |   Howrah Division / Eastern Railway", false, S3_C.TITLE_BG);
+  row("Scanned: " + scanned + "   |   Work complete (excluded): " + skipped + "   |   Total exceptions: " + tot, false, S3_C.TITLE_BG);
+  row("");
+  
+  row("EXCEPTION 1 — SPEED RESTRICTION PENDING  (" + ex1.length + " entries)", true, S3_C.HEADER_BG);
+  if (!ex1.length) row("  No exceptions found", false, S3_C.OK_BG);
+  else ex1.forEach(function(e) {
+    row("  * " + e.label, false, S3_C.EXCEPT_BG);
+    row("      Speed Restriction: " + e.speed);
+  });
+  row("");
+  
+  row("EXCEPTION 2 — PHOTO MISSING (" + ex2.length + " entries)", true, S3_C.HEADER_BG);
+  if (!ex2.length) row("  No exceptions found", false, S3_C.OK_BG);
+  else ex2.forEach(function(e) { row("  * " + e, false, S3_C.EXCEPT_BG); });
+  row("");
+  
+  row("EXCEPTION 3 — TDC LAPSED  (" + ex3.length + " entries)", true, S3_C.HEADER_BG);
+  if (!ex3.length) row("  No exceptions found", false, S3_C.OK_BG);
+  else ex3.forEach(function(e) {
+    row("  * " + e.label, false, S3_C.EXCEPT_BG);
+    row("      TDC: " + e.tdc + "   |   Lapsed by: " + e.days + " days");
+  });
+  row("");
+  
+  row("EXCEPTION 4 — REVISED TDC LAPSED  (" + ex4.length + " entries)", true, S3_C.HEADER_BG);
+  if (!ex4.length) row("  No exceptions found", false, S3_C.OK_BG);
+  else ex4.forEach(function(e) {
+    row("  * " + e.label, false, S3_C.EXCEPT_BG);
+    row("      Revised TDC: " + e.tdc + "   |   Lapsed by: " + e.days + " days");
+  });
+  row("");
+  
+  row("END OF TRC UML PEAKS REPORT — " + today, true, S3_C.TITLE_BG);
+  return out;
 }
