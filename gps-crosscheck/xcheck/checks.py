@@ -294,7 +294,8 @@ def _verdict(name, res, row, gps, has_gps, has_track, photo_start, photo_end,
         return Verdict(name, "CANNOT VERIFY", "no GPS end time")
     if "not started" in n or "not done" in n or "unattended" in n:
         if has_gps:
-            return Verdict(name, "FALSE", f"GPS data exists ({hm(gps.start)}-{hm(gps.end)}, {gps.km or 0:g} km)")
+            extra = f" to {hm(gps.end)}, {gps.km:g} km" if (gps.end and gps.km is not None and not start_only) else ""
+            return Verdict(name, "FALSE", f"GPS switched on at {hm(gps.start)}{extra}")
         if photo_start:
             return Verdict(name, "FALSE", f"start photo at {hm(photo_start)} shows duty was done; GPS not working / not carried")
         return Verdict(name, "CONFIRMED", "no GPS data and no readable start photo")
