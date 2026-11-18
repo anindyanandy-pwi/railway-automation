@@ -9,7 +9,7 @@
  * Script properties (Project Settings > Script properties):
  *   RESULTS_KEY     long random text, same value as the GitHub secret RESULTS_KEY
  *   DASHBOARD_KEY   password for opening the dashboard
- *   GITHUB_REPO     anindyanandy-pwi/railway-automation
+ *   GITHUB_REPO     anindyanandy-pwi/gps-crosscheck
  *   GITHUB_TOKEN    (optional) fine-grained token with "Actions: write" on that repo, for the Run now button
  */
 
@@ -18,6 +18,8 @@ var HASHES = 'PhotoHashes';
 var SETTINGS = 'Settings';
 var RUNS = 'Runs';
 var WORKFLOW = 'gps-crosscheck.yml';
+var HASH_COLS = ['date', 'drive_id', 'role', 'dhash', 'batch', 'stamp_read', 'stamp_time', 'whatsapp_time',
+  'file_name', 'lat', 'lon', 'ocr_conf', 'sky_bright', 'problems'];
 
 var COLS = ['run_date', 'check', 'duty_date', 'status', 'sr_den', 'aen', 'pwi', 'beat', 'names',
   'gps_in_sheet', 'vendor', 'portal_device', 'roster', 'sheet_start', 'sheet_end', 'sheet_km', 'sheet_speed',
@@ -47,7 +49,7 @@ var SETTING_DEFAULTS = {
 function setup() {
   var ss = SpreadsheetApp.getActive();
   sheet_(RESULTS, COLS);
-  sheet_(HASHES, ['date', 'drive_id', 'role', 'dhash', 'batch']);
+  sheet_(HASHES, HASH_COLS);
   sheet_(RUNS, ['run_date', 'received_at', 'records', 'red', 'amber', 'check', 'ok']);
   var s = sheet_(SETTINGS, ['setting', 'value', 'meaning']);
   if (s.getLastRow() < 2) {
@@ -57,7 +59,7 @@ function setup() {
   var p = PropertiesService.getScriptProperties();
   if (!p.getProperty('RESULTS_KEY')) p.setProperty('RESULTS_KEY', Utilities.getUuid() + Utilities.getUuid());
   if (!p.getProperty('DASHBOARD_KEY')) p.setProperty('DASHBOARD_KEY', Utilities.getUuid().slice(0, 13));
-  if (!p.getProperty('GITHUB_REPO')) p.setProperty('GITHUB_REPO', 'anindyanandy-pwi/railway-automation');
+  if (!p.getProperty('GITHUB_REPO')) p.setProperty('GITHUB_REPO', 'anindyanandy-pwi/gps-crosscheck');
   Logger.log('RESULTS_KEY (put this in GitHub secret RESULTS_KEY): ' + p.getProperty('RESULTS_KEY'));
   Logger.log('DASHBOARD_KEY (add ?key=... to the web app URL): ' + p.getProperty('DASHBOARD_KEY'));
   ss.toast('Setup done. Open View > Logs (Execution log) to copy the two keys.');
@@ -126,16 +128,20 @@ function saveRun_(data) {
   });
   if (rows.length) s.getRange(s.getLastRow() + 1, 1, rows.length, COLS.length).setNumberFormat('@').setValues(rows);
 
-  var h = sheet_(HASHES, ['date', 'drive_id', 'role', 'dhash', 'batch']);
+  var h = sheet_(HASHES, HASH_COLS);
   var known = {};
-  if (h.getLastRow() > 1) h.getRange(2, 2, h.getLastRow() - 1, 1).getValues().forEach(function (x) { known[x[0]] = 1; });
+  if (h.getLastRow() > 1) h.getRange(2, 2, h.getLastRow() - 1, 2).getValues().forEach(function (x) { known[x[0] + '|' + x[1]] = 1; });
   var hrows = [];
   data.records.forEach(function (r) {
     (r.photo_hashes || []).forEach(function (p) {
-      if (!known[p.drive_id]) { known[p.drive_id] = 1; hrows.push([r.duty_date, p.drive_id, p.role, p.dhash, r.pwi + ' ' + r.beat]); }
+      var k = p.drive_id + '|' + p.role;
+      if (known[k]) return;
+      known[k] = 1;
+      p.date = r.duty_date; p.batch = r.pwi + ' ' + r.beat;
+      hrows.push(HASH_COLS.map(function (c) { var v = p[c]; return v === null || v === undefined ? '' : v; }));
     });
   });
-  if (hrows.length) h.getRange(h.getLastRow() + 1, 1, hrows.length, 5).setNumberFormat('@').setValues(hrows);
+  if (hrows.length) h.getRange(h.getLastRow() + 1, 1, hrows.length, HASH_COLS.length).setNumberFormat('@').setValues(hrows);
 
   var c = { RED: 0, AMBER: 0, CHECK: 0, OK: 0 };
   data.records.forEach(function (r) { c[r.status] = (c[r.status] || 0) + 1; });
@@ -160,9 +166,9 @@ function getHashes_(days) {
   var h = SpreadsheetApp.getActive().getSheetByName(HASHES);
   if (!h || h.getLastRow() < 2) return [];
   var since = new Date(Date.now() - days * 86400000);
-  return h.getRange(2, 1, h.getLastRow() - 1, 5).getDisplayValues()
+  return h.getRange(2, 1, h.getLastRow() - 1, HASH_COLS.length).getDisplayValues()
     .filter(function (r) { return new Date(r[0]) >= since; })
-    .map(function (r) { return { date: r[0], drive_id: r[1], role: r[2], dhash: r[3], batch: r[4] }; });
+    .map(function (r) { var o = {}; HASH_COLS.forEach(function (c, i) { o[c] = r[i]; }); return o; });
 }
 
 // ============================================================================ used by the dashboard
