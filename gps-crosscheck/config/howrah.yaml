@@ -51,5 +51,6 @@ valid_area:
   lon_min: 86.5
   lon_max: 89.0
 
-# Night (dark) hours for the daylight test, local time.
-night_hours: { from: "18:00", to: "05:45" }
+# Deep-night hours for the daylight test, local time. Kept away from dusk/dawn because
+# phone night-mode makes twilight look like day.
+night_hours: { from: "20:00", to: "04:00" }

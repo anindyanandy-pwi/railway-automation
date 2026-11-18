@@ -128,6 +128,7 @@ def main(argv=None):
     ap.add_argument("--date", help="run date D (default: today in division time)")
     ap.add_argument("--only", choices=["cwp", "keyman"], help="check one tab only")
     ap.add_argument("--limit", type=int, default=0, help="first N rows per check (testing)")
+    ap.add_argument("--sections", help="comma-separated PWI sections only, e.g. HWH,BMG (testing)")
     ap.add_argument("--no-portals", action="store_true", help="skip GPS portals (testing photos/sheet only)")
     ap.add_argument("--sheet-file", help="use an already downloaded sheet export (testing)")
     ap.add_argument("--out", help="also write results JSON to this file (local testing only)")
@@ -154,6 +155,9 @@ def main(argv=None):
                      window(cfg, "keyman_start", run_date)))
         plan.append(("keyman_full", sheet.read_tab(path, cfg["sheet"]["keyman_tab"], "keyman", yday),
                      window(cfg, "keyman_full", run_date)))
+    if a.sections:
+        want = {x.strip().upper().replace(" ", "") for x in a.sections.split(",")}
+        plan = [(m, [r for r in rows if r.pwi.upper().replace(" ", "") in want], w) for m, rows, w in plan]
     if a.limit:
         plan = [(m, rows[: a.limit], w) for m, rows, w in plan]
 

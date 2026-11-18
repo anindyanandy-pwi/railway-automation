@@ -343,39 +343,52 @@ def _verdict(name, res, row, gps, has_gps, has_track, photo_start, photo_end,
 def cross_row(results: list[RowResult], history_hashes: list[dict], st: dict, same_place_fn, raw_fn):
     """Photos reused between batches/days, and different batches photographed at the same spot."""
     from .photos import hamming
-    seen: list[tuple[str, RowResult, PhotoResult]] = []
+
+    def label(r):
+        return f"{r.row.pwi} {r.row.beat[:30]}".replace("\n", " ")
+
+    dup_pairs: set[frozenset] = set()
+    seen: list[tuple[RowResult, PhotoResult]] = []
     for r in results:
         for p in r.photos:
             if not p.dhash:
                 continue
-            key = f"{r.row.pwi} {r.row.beat[:30]}"
-            for k2, r2, p2 in seen:
-                if r2 is r or p2.drive_id == p.drive_id:
-                    continue
-                if hamming(p.dhash, p2.dhash) <= 12:
-                    r.add("DUPLICATE_PHOTO", "high",
-                          f"{p.role.title()} photo is the same picture as {k2}'s {p2.role} photo", "photo")
+            for r2, p2 in seen:
+                if r2.row is r.row or r2.row.beat == r.row.beat and r2.row.pwi == r.row.pwi:
+                    continue        # same beat (e.g. keyman start + full day of the same row)
+                same_file = p2.drive_id == p.drive_id
+                if same_file or hamming(p.dhash, p2.dhash) <= 12:
+                    pair = frozenset((id(r.row), id(r2.row)))
+                    if pair in dup_pairs:
+                        continue
+                    dup_pairs.add(pair)
+                    how = "the same photo file" if same_file else "the same picture"
+                    for x, y, px, py in ((r, r2, p, p2), (r2, r, p2, p)):
+                        x.add("DUPLICATE_PHOTO", "high",
+                              f"{px.role.title()} photo is {how} as {label(y)}'s {py.role} photo", "photo")
             for h in history_hashes:
                 if h.get("drive_id") != p.drive_id and hamming(p.dhash, h.get("dhash", "")) <= 12 \
                         and h.get("date") != str(r.row.duty_date):
                     r.add("DUPLICATE_PHOTO", "high",
                           f"{p.role.title()} photo was already used on {h.get('date')} ({h.get('batch', '')})", "photo")
                     break
-            seen.append((key, r, p))
+            seen.append((r, p))
     # same spot, same angle, different batch, stamps within 15 minutes (same section only, to keep it fast)
     by_sec: dict[str, list[tuple[RowResult, PhotoResult]]] = {}
     for r in results:
         for p in r.photos:
             if p.role == "start" and p.stamp_time:
-                by_sec.setdefault(r.row.pwi, []).append((r, p))
+                by_sec.setdefault(f"{r.mode}|{r.row.pwi}", []).append((r, p))
     for items in by_sec.values():
         for i, (ra, pa) in enumerate(items):
             for rb, pb in items[i + 1:]:
-                if ra is rb or abs((pa.stamp_time - pb.stamp_time).total_seconds()) > 900:
+                if ra is rb or pa.drive_id == pb.drive_id or frozenset((id(ra.row), id(rb.row))) in dup_pairs:
+                    continue
+                if abs((pa.stamp_time - pb.stamp_time).total_seconds()) > 900:
                     continue
                 score = same_place_fn(raw_fn(pa.drive_id), raw_fn(pb.drive_id))
                 if score >= 60:
                     for x, y, py in ((ra, rb, pb), (rb, ra, pa)):
                         x.add("SAME_SPOT_OTHER_BATCH", "medium",
-                              f"Start photo taken at the same spot, same angle as '{y.row.beat[:40]}' "
+                              f"Start photo taken at the same spot, same angle as '{label(y)}' "
                               f"({hm(py.stamp_time)}) - one person photographing both?", "photo")
