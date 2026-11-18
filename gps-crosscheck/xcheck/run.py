@@ -161,6 +161,11 @@ def main(argv=None):
     ril = nb = None
     if not a.no_portals:
         pc = cfg["portals"]
+        need = [pc[p][k] for p in ("rilapp", "nbtrack") for k in ("user_env", "password_env")]
+        missing = [n for n in need if not os.environ.get(n)]
+        if missing:
+            log.error("Missing GitHub secrets: %s (repo Settings > Secrets and variables > Actions)", ", ".join(missing))
+            sys.exit(2)
         ril = Rilapp(pc["rilapp"]["base_url"], os.environ[pc["rilapp"]["user_env"]],
                      os.environ[pc["rilapp"]["password_env"]])
         nb = Nbtrack(pc["nbtrack"]["api_url"], os.environ[pc["nbtrack"]["user_env"]],
@@ -272,6 +277,9 @@ def main(argv=None):
     if a.out:
         with open(a.out, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=1, default=str)
+    if not results_url and not a.out:
+        log.error("Missing GitHub secret RESULTS_URL - results were not saved")
+        sys.exit(2)
     if results_url and not a.out:
         r = requests.post(results_url, params={"key": key}, data=json.dumps(payload, default=str),
                           headers={"Content-Type": "application/json"}, timeout=600)
